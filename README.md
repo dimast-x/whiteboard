@@ -1,0 +1,2 @@
+# whiteboard
+Distributed Whiteboard Application
