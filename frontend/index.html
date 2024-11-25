@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whiteboard Application</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 flex flex-col h-screen">
+  <div class="flex justify-center mt-4">
+    <div class="bg-white shadow-lg rounded-full px-4 py-2 flex space-x-2 items-center">
+      <button id="freehandButton"
+        class="flex items-center px-4 py-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        </svg>
+        Draw
+      </button>
+      <button id="lineButton"
+        class="flex items-center px-4 py-2 bg-green-500 text-white rounded-full hover:bg-green-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h16" />
+        </svg>
+        Line
+      </button>
+      <button id="rectangleButton"
+        class="flex items-center px-4 py-2 bg-yellow-500 text-white rounded-full hover:bg-yellow-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <rect x="4" y="4" width="16" height="16" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+        </svg>
+        Rectangle
+      </button>
+      <button id="circleButton"
+        class="flex items-center px-4 py-2 bg-red-500 text-white rounded-full hover:bg-red-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <circle cx="12" cy="12" r="8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+        </svg>
+        Circle
+      </button>
+      <button id="textButton"
+        class="flex items-center px-4 py-2 bg-purple-500 text-white rounded-full hover:bg-purple-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H16M8 11H16M8 15H16M5 19h14" />
+        </svg>
+        Text
+      </button>
+      <button id="clearButton"
+        class="flex items-center px-4 py-2 bg-gray-500 text-white rounded-full hover:bg-gray-600 focus:outline-none">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+        Clear
+      </button>
+    </div>
+  </div>
+
+  <div class="flex-grow relative">
+    <canvas id="canvas" width="1920" height="1080" class="absolute top-0 left-0"></canvas>
+  </div>
+
+  <script>
+    const MESSAGE_CONNECTED = 1;
+    const MESSAGE_USER_JOINED = 2;
+    const MESSAGE_USER_LEFT = 3;
+    const MESSAGE_STROKE = 4;
+    const MESSAGE_CLEAR = 5;
+    const MESSAGE_SHAPE = 6;
+    const MESSAGE_TEXT = 7;
+
+    window.onload = function () {
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext("2d");
+      let isDrawing = false;
+      let strokeColor = '';
+      let currentMode = 'freehand';
+      let myUserId;
+      let strokes = [];
+      let shapes = [];
+      let texts = [];
+      const userColors = {};
+      const socket = new WebSocket("ws://localhost:3000/ws");
+      let startX, startY;
+      let currentStroke = null;
+      let previewShape = null;
+
+      socket.onclose = function (event) {
+        if (event.wasClean) {
+          alert("The connection was closed cleanly.");
+        } else {
+          alert("Connection lost! The server might be down.");
+        }
+      };
+
+      function drawGrid() {
+        const gridSpacing = 20;
+        const dotRadius = 1;
+        ctx.fillStyle = '#e0e0e0';
+        for (let x = 0; x < canvas.width; x += gridSpacing) {
+          for (let y = 0; y < canvas.height; y += gridSpacing) {
+            ctx.beginPath();
+            ctx.arc(x, y, dotRadius, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        }
+      }
+      socket.onmessage = function (event) {
+        try {
+          const message = JSON.parse(event.data);
+          onMessage(message);
+        } catch (error) {
+          console.error("Error parsing message:", error);
+        }
+      };
+
+      function onMessage(message) {
+        switch (message.kind) {
+          case MESSAGE_CONNECTED:
+            strokeColor = message.color;
+            myUserId = message.userId;
+
+            message.users.forEach(user => {
+              userColors[user.id] = user.color;
+            });
+
+            message.strokes.forEach(stroke => {
+              strokes.push(stroke);
+            });
+
+            message.shapes.forEach(shape => {
+              shapes.push(shape);
+            });
+
+            message.texts.forEach(text => {
+              texts.push(text);
+            });
+
+            update();
+            break;
+
+          case MESSAGE_USER_JOINED:
+            userColors[message.user.id] = message.user.color;
+            break;
+
+          case MESSAGE_USER_LEFT:
+            delete userColors[message.userId];
+            update();
+            break;
+
+          case MESSAGE_STROKE:
+            strokes.push(message);
+            update();
+            break;
+
+          case MESSAGE_SHAPE:
+            shapes.push(message);
+            update();
+            break;
+
+          case MESSAGE_TEXT:
+            texts.push(message);
+            update();
+            break;
+
+          case MESSAGE_CLEAR:
+            strokes = [];
+            shapes = [];
+            texts = [];
+            update();
+            break;
+
+          default:
+            console.warn('Unknown message kind:', message.kind);
+        }
+      }
+
+      // Toolbar
+      document.getElementById('freehandButton').onclick = () => { currentMode = 'freehand'; };
+      document.getElementById('lineButton').onclick = () => { currentMode = 'line'; };
+      document.getElementById('rectangleButton').onclick = () => { currentMode = 'rectangle'; };
+      document.getElementById('circleButton').onclick = () => { currentMode = 'circle'; };
+      document.getElementById('textButton').onclick = () => { currentMode = 'text'; };
+
+      canvas.onmousedown = function (event) {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        if (currentMode === 'freehand') {
+          isDrawing = true;
+          startStroke(x, y);
+        } else if (['line', 'rectangle', 'circle'].includes(currentMode)) {
+          startX = x;
+          startY = y;
+          isDrawing = true;
+          previewShape = { shapeType: currentMode, start: { x, y }, end: { x, y }, color: strokeColor };
+          update();
+        } else if (currentMode === 'text') {
+          const content = prompt("Enter text:");
+          if (content) {
+            const message = {
+              kind: MESSAGE_TEXT,
+              userId: myUserId,
+              content: content,
+              position: { x: x, y: y },
+              fontSize: 16,
+              color: strokeColor
+            };
+            socket.send(JSON.stringify(message));
+            texts.push(message);
+            update();
+          }
+        }
+      };
+
+      canvas.onmousemove = function (event) {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        if (isDrawing && currentMode === 'freehand') {
+          addPointToStroke(x, y);
+        } else if (isDrawing && ['line', 'rectangle', 'circle'].includes(currentMode)) {
+          if (previewShape) {
+            previewShape.end = { x, y };
+            update();
+          }
+        }
+      };
+
+      canvas.onmouseup = function (event) {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        if (isDrawing && currentMode === 'freehand') {
+          endStroke();
+        } else if (isDrawing && ['line', 'rectangle', 'circle'].includes(currentMode)) {
+          if (previewShape) {
+            const shapeMessage = {
+              kind: MESSAGE_SHAPE,
+              userId: myUserId,
+              shapeType: previewShape.shapeType,
+              start: previewShape.start,
+              end: previewShape.end,
+              color: previewShape.color
+            };
+
+            if (previewShape.shapeType === 'circle') {
+              shapeMessage.radius = Math.hypot(previewShape.end.x - previewShape.start.x, previewShape.end.y - previewShape.start.y);
+            }
+
+            socket.send(JSON.stringify(shapeMessage));
+            shapes.push(shapeMessage);
+            previewShape = null;
+            update();
+            isDrawing = false;
+          }
+        }
+      };
+
+      canvas.onmouseleave = function () {
+        if (isDrawing && currentMode === 'freehand') {
+          endStroke();
+        } else if (isDrawing && ['line', 'rectangle', 'circle'].includes(currentMode)) {
+          if (previewShape) {
+            previewShape = null;
+            update();
+            isDrawing = false;
+          }
+        }
+      };
+
+      function startStroke(x, y) {
+        currentStroke = {
+          kind: MESSAGE_STROKE,
+          userId: myUserId,
+          points: [{ x: x, y: y }],
+          finish: false
+        };
+        strokes.push(currentStroke);
+        update();
+      }
+
+      function addPointToStroke(x, y) {
+        if (currentStroke) {
+          currentStroke.points.push({ x: x, y: y });
+          update();
+        }
+      }
+
+      function endStroke() {
+        if (currentStroke) {
+          currentStroke.finish = true;
+          socket.send(JSON.stringify(currentStroke));
+          currentStroke = null;
+          isDrawing = false;
+        }
+      }
+
+      function update() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 4;
+
+        drawStrokes(strokes);
+
+        drawShapes(shapes);
+
+        drawTexts(texts);
+
+        if (previewShape) {
+          drawPreviewShape(previewShape);
+        }
+      }
+
+      function drawStrokes(strokes) {
+        strokes.forEach(stroke => {
+          if (stroke.points.length > 1) {
+            ctx.strokeStyle = userColors[stroke.userId] || '#000000';
+            ctx.beginPath();
+            ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+            for (let j = 1; j < stroke.points.length; j++) {
+              ctx.lineTo(stroke.points[j].x, stroke.points[j].y);
+            }
+            ctx.stroke();
+          }
+        });
+      }
+
+      function drawShapes(shapes) {
+        shapes.forEach(shape => {
+          ctx.strokeStyle = userColors[shape.userId] || '#000000';
+          ctx.beginPath();
+          if (shape.shapeType === 'line') {
+            ctx.moveTo(shape.start.x, shape.start.y);
+            ctx.lineTo(shape.end.x, shape.end.y);
+          } else if (shape.shapeType === 'rectangle') {
+            const width = shape.end.x - shape.start.x;
+            const height = shape.end.y - shape.start.y;
+            ctx.rect(shape.start.x, shape.start.y, width, height);
+          } else if (shape.shapeType === 'circle') {
+            const radius = shape.radius || Math.hypot(shape.end.x - shape.start.x, shape.end.y - shape.start.y);
+            ctx.arc(shape.start.x, shape.start.y, radius, 0, 2 * Math.PI);
+          }
+          ctx.stroke();
+        });
+      }
+
+      function drawTexts(texts) {
+        texts.forEach(text => {
+          ctx.fillStyle = "#000000";
+          ctx.font = `${text.fontSize}px Arial`;
+          ctx.fillText(text.content, text.position.x, text.position.y);
+        });
+      }
+
+      function drawPreviewShape(shape) {
+        ctx.strokeStyle = shape.color || '#000000';
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        if (shape.shapeType === 'line') {
+          ctx.moveTo(shape.start.x, shape.start.y);
+          ctx.lineTo(shape.end.x, shape.end.y);
+        } else if (shape.shapeType === 'rectangle') {
+          const width = shape.end.x - shape.start.x;
+          const height = shape.end.y - shape.start.y;
+          ctx.rect(shape.start.x, shape.start.y, width, height);
+        } else if (shape.shapeType === 'circle') {
+          const radius = shape.radius || Math.hypot(shape.end.x - shape.start.x, shape.end.y - shape.start.y);
+          ctx.arc(shape.start.x, shape.start.y, radius, 0, 2 * Math.PI);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      document.getElementById('clearButton').onclick = function () {
+        if (confirm("Are you sure you want to clear the board? This will clear everyone's drawings.")) {
+          strokes = [];
+          shapes = [];
+          texts = [];
+          socket.send(JSON.stringify({ kind: MESSAGE_CLEAR, userId: myUserId }));
+          update();
+        }
+      };
+    };
+  </script>
+</body>
+
+</html>
