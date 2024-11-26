@@ -1,11 +1,30 @@
-name: whiteboard
+version: '3.8'
 
 services:
+  traefik:
+    image: traefik:v2.9
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - int_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.local`)"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+
   redis:
     image: redis:latest
     container_name: redis
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -18,19 +37,54 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: securepassword
       POSTGRES_DB: app_database
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - int_network
 
+  whiteboard:
+    image: whiteboard
+    build:
+      context: ../
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - int_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whiteboard.rule=HostRegexp(`{host:.+}`)"
+      - "traefik.http.routers.whiteboard.entrypoints=web"
+      - "traefik.http.services.whiteboard.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.websocket.headers.customRequestHeaders.Upgrade=websocket"
+      - "traefik.http.middlewares.websocket.headers.customRequestHeaders.Connection=Upgrade"
+    deploy:
+      replicas: 3
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3001:3000"
+    networks:
+      - int_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.local`)"
+      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+
 volumes:
   redis_data:
-    driver: local
   postgres_data:
-    driver: local
+  grafana_data:
 
 networks:
   int_network:
-    driver: bridge
+    driver: overlay
+    attachable: true

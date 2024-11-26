@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	redisOpts, err := redis.ParseURL("redis://localhost:6379")
+	redisOpts, err := redis.ParseURL("redis://redis:6379")
 	if err != nil {
 		panic(err)
 	}
