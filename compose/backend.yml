@@ -43,14 +43,16 @@ services:
       - int_network
 
   whiteboard:
-    image: whiteboard
-    build:
-      context: ../
+    image: dimast0/whiteboard:v1
+    # build:
+    #   context: ../
     depends_on:
       - redis
       - postgres
     networks:
       - int_network
+    expose:
+      - "9100"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.whiteboard.rule=HostRegexp(`{host:.+}`)"
@@ -61,28 +63,9 @@ services:
     deploy:
       replicas: 3
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    ports:
-      - "3001:3000"
-    networks:
-      - int_network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.local`)"
-      - "traefik.http.routers.grafana.entrypoints=web"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-
 volumes:
   redis_data:
   postgres_data:
-  grafana_data:
 
 networks:
   int_network:
