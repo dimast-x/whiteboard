@@ -30,29 +30,14 @@ services:
     networks:
       - int_network
 
-  postgres:
-    image: postgres:latest
-    container_name: postgres
-    environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: securepassword
-      POSTGRES_DB: app_database
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - int_network
-
   whiteboard:
-    image: dimast0/whiteboard:v1
-    # build:
-    #   context: ../
+    image: whiteboard
+    build:
+      context: ../
     depends_on:
       - redis
-      - postgres
     networks:
       - int_network
-    expose:
-      - "9100"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.whiteboard.rule=HostRegexp(`{host:.+}`)"
@@ -65,7 +50,6 @@ services:
 
 volumes:
   redis_data:
-  postgres_data:
 
 networks:
   int_network:
