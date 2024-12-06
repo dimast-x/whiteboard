@@ -26,6 +26,10 @@ Before deployment make sure k8s has metrics-server enabled (required for autosca
 
 ```hey -n 10000 -c 100 http://localhost:30080/ws```
 
+## Redis cluster deployment
+
+    ```helm install redis-cl oci://registry-1.docker.io/bitnamicharts/redis-cluster```
+
 ## Persistence
 
 ### RDB (Redis Database Backup)

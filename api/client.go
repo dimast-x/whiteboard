@@ -76,7 +76,7 @@ func (client *Client) close() {
 	}
 }
 
-func CreateConsumerGroup(client *redis.Client, stream, group string) error {
+func CreateConsumerGroup(client *redis.ClusterClient, stream, group string) error {
 	ctx := context.Background()
 	err := client.XGroupCreateMkStream(ctx, stream, group, "0-0").Err()
 	if err != nil {

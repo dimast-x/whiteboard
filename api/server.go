@@ -73,7 +73,7 @@ type Server struct {
 	clients     map[int]*Client
 	publisher   message.Publisher
 	subscriber  message.Subscriber
-	redisClient *redis.Client
+	redisClient *redis.ClusterClient
 	broadcastCh chan []byte
 	register    chan *Client
 	unregister  chan *Client
@@ -85,7 +85,7 @@ type Server struct {
 	textSet   *lwwSet[Text]
 }
 
-func NewServer(publisher message.Publisher, subscriber message.Subscriber, redisClient *redis.Client) *Server {
+func NewServer(publisher message.Publisher, subscriber message.Subscriber, redisClient *redis.ClusterClient) *Server {
 	return &Server{
 		clients:     make(map[int]*Client),
 		publisher:   publisher,

@@ -14,12 +14,19 @@ import (
 )
 
 func main() {
-	redisOpts, err := redis.ParseURL("redis://redis:6379") // redis://localhost:6379 for local dev
-	if err != nil {
-		log.Fatal("Failed to parse Redis URL:", err)
+	redisClusterOptions := &redis.ClusterOptions{
+		Addrs: []string{
+			"redis-cl-redis-cluster-0.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+			"redis-cl-redis-cluster-1.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+			"redis-cl-redis-cluster-2.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+			"redis-cl-redis-cluster-3.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+			"redis-cl-redis-cluster-4.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+			"redis-cl-redis-cluster-5.redis-cl-redis-cluster-headless.default.svc.cluster.local:6379",
+		},
+		Password: "nxTbgXeWjL", // TODO: take from env
 	}
 
-	redisClient := redis.NewClient(redisOpts)
+	redisClient := redis.NewClusterClient(redisClusterOptions)
 
 	logger := watermill.NewStdLogger(true, true)
 	publisher, err := redisstream.NewPublisher(redisstream.PublisherConfig{
