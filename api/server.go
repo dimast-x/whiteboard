@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -11,8 +12,58 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
+
+var (
+	NodeID = uuid.New().String()
+)
+
+type lwwElement[T any] struct {
+	Element   T
+	Timestamp time.Time
+}
+
+type lwwSet[T any] struct {
+	mu       sync.Mutex
+	elements map[string]lwwElement[T]
+	idGetter func(T) string
+}
+
+func newLWWSet[T any](idGetter func(T) string) *lwwSet[T] {
+	return &lwwSet[T]{
+		elements: make(map[string]lwwElement[T]),
+		idGetter: idGetter,
+	}
+}
+
+func (s *lwwSet[T]) Add(element T, timestamp time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.idGetter(element)
+	existing, exists := s.elements[id]
+	if !exists || timestamp.After(existing.Timestamp) {
+		s.elements[id] = lwwElement[T]{Element: element, Timestamp: timestamp}
+	}
+}
+
+func (s *lwwSet[T]) ToSlice() []T {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := make([]T, 0, len(s.elements))
+	for _, v := range s.elements {
+		res = append(res, v.Element)
+	}
+	return res
+}
+
+func (s *lwwSet[T]) Clear(timestamp time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.elements = make(map[string]lwwElement[T])
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -22,28 +73,31 @@ type Server struct {
 	clients     map[int]*Client
 	publisher   message.Publisher
 	subscriber  message.Subscriber
+	redisClient *redis.Client
 	broadcastCh chan []byte
 	register    chan *Client
 	unregister  chan *Client
-	strokes     []Stroke
-	shapes      []Shape
-	texts       []Text
 	nextID      int
 	mutex       sync.Mutex
+
+	strokeSet *lwwSet[Stroke]
+	shapeSet  *lwwSet[Shape]
+	textSet   *lwwSet[Text]
 }
 
-func NewServer(publisher message.Publisher, subscriber message.Subscriber) *Server {
+func NewServer(publisher message.Publisher, subscriber message.Subscriber, redisClient *redis.Client) *Server {
 	return &Server{
 		clients:     make(map[int]*Client),
 		publisher:   publisher,
 		subscriber:  subscriber,
-		broadcastCh: make(chan []byte),
+		redisClient: redisClient, // Initialize the new field
+		broadcastCh: make(chan []byte, 1024),
 		register:    make(chan *Client),
 		unregister:  make(chan *Client),
-		strokes:     []Stroke{},
-		shapes:      []Shape{},
-		texts:       []Text{},
 		nextID:      1,
+		strokeSet:   newLWWSet[Stroke](func(s Stroke) string { return s.ID }),
+		shapeSet:    newLWWSet[Shape](func(sh Shape) string { return sh.ID }),
+		textSet:     newLWWSet[Text](func(t Text) string { return t.ID }),
 	}
 }
 
@@ -90,6 +144,8 @@ func (s *Server) Run() {
 }
 
 func (s *Server) getUsers() []User {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	users := make([]User, 0, len(s.clients))
 	for _, c := range s.clients {
 		users = append(users, User{ID: c.id, Color: c.color})
@@ -114,8 +170,8 @@ func (s *Server) send(protocol interface{}, client *Client) {
 func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	socket, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
-		http.Error(w, "could not upgrade", http.StatusInternalServerError)
+		log.Println("Upgrade error:", err)
+		http.Error(w, "could not upgrade to websocket", http.StatusInternalServerError)
 		return
 	}
 	client := newClient(s, socket)
@@ -125,23 +181,30 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go client.write()
 }
 
+func (s *Server) RegisterClient(c *Client) {
+	s.register <- c
+}
+
+func (s *Server) UnregisterClient(c *Client) {
+	s.unregister <- c
+}
+
 func (s *Server) onConnect(client *Client) {
-	log.Println("client connected: ", client.socket.RemoteAddr())
+	log.Println("Client connected:", client.socket.RemoteAddr())
 
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	client.id = s.nextID
 	s.nextID++
 	client.color = "#000000"
 	s.clients[client.id] = client
+	s.mutex.Unlock()
 
 	connectedMsg := NewConnected(
 		client.color,
 		s.getUsers(),
-		s.strokes,
-		s.shapes,
-		s.texts,
+		s.strokeSet.ToSlice(),
+		s.shapeSet.ToSlice(),
+		s.textSet.ToSlice(),
 	)
 	s.send(connectedMsg, client)
 
@@ -150,11 +213,10 @@ func (s *Server) onConnect(client *Client) {
 }
 
 func (s *Server) onDisconnect(client *Client) {
-	log.Println("client disconnected: ", client.socket.RemoteAddr())
+	log.Println("Client disconnected:", client.socket.RemoteAddr())
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-
 	client.close()
 	delete(s.clients, client.id)
 
@@ -162,32 +224,25 @@ func (s *Server) onDisconnect(client *Client) {
 }
 
 func (s *Server) onMessage(data []byte, client *Client) error {
-	var baseProtocol struct {
+	var base struct {
 		Kind int `json:"kind"`
 	}
 
-	if err := json.Unmarshal(data, &baseProtocol); err != nil {
+	if err := json.Unmarshal(data, &base); err != nil {
 		return err
 	}
 
-	switch baseProtocol.Kind {
+	switch base.Kind {
 	case KindStroke:
 		var stroke Stroke
 		if err := json.Unmarshal(data, &stroke); err != nil {
 			return err
 		}
 		stroke.UserID = client.id
-
-		s.mutex.Lock()
-		s.strokes = append(s.strokes, stroke)
-		s.mutex.Unlock()
-
-		payload, _ := json.Marshal(stroke)
-		msg := message.NewMessage(watermill.NewUUID(), payload)
-		err := s.publisher.Publish("stroke_updates", msg)
-		if err != nil {
-			log.Println("Error publishing stroke:", err)
+		if stroke.ID == "" {
+			stroke.ID = watermill.NewUUID()
 		}
+		return s.handleStroke(stroke)
 
 	case KindShape:
 		var shape Shape
@@ -195,17 +250,10 @@ func (s *Server) onMessage(data []byte, client *Client) error {
 			return err
 		}
 		shape.UserID = client.id
-
-		s.mutex.Lock()
-		s.shapes = append(s.shapes, shape)
-		s.mutex.Unlock()
-
-		payload, _ := json.Marshal(shape)
-		msg := message.NewMessage(watermill.NewUUID(), payload)
-		err := s.publisher.Publish("shape_updates", msg)
-		if err != nil {
-			log.Println("Error publishing shape:", err)
+		if shape.ID == "" {
+			shape.ID = watermill.NewUUID()
 		}
+		return s.handleShape(shape)
 
 	case KindText:
 		var text Text
@@ -213,86 +261,274 @@ func (s *Server) onMessage(data []byte, client *Client) error {
 			return err
 		}
 		text.UserID = client.id
-
-		s.mutex.Lock()
-		s.texts = append(s.texts, text)
-		s.mutex.Unlock()
-
-		payload, _ := json.Marshal(text)
-		msg := message.NewMessage(watermill.NewUUID(), payload)
-		err := s.publisher.Publish("text_updates", msg)
-		if err != nil {
-			log.Println("Error publishing text:", err)
+		if text.ID == "" {
+			text.ID = watermill.NewUUID()
 		}
+		return s.handleText(text)
 
 	case KindClear:
-		s.mutex.Lock()
-		s.strokes = []Stroke{}
-		s.shapes = []Shape{}
-		s.texts = []Text{}
-		s.mutex.Unlock()
-
 		var clearMsg Clear
 		if err := json.Unmarshal(data, &clearMsg); err != nil {
 			return err
 		}
 		clearMsg.UserID = client.id
-		payload, _ := json.Marshal(clearMsg)
-		msg := message.NewMessage(watermill.NewUUID(), payload)
-		err := s.publisher.Publish("clear_updates", msg)
-		if err != nil {
-			log.Println("Error publishing clear:", err)
+		if clearMsg.ID == "" {
+			clearMsg.ID = watermill.NewUUID()
 		}
+		return s.handleClear(clearMsg)
 
 	default:
 		return errors.New("invalid protocol type")
 	}
+}
+
+func (s *Server) handleStroke(stroke Stroke) error {
+	payload, err := json.Marshal(stroke)
+	if err != nil {
+		return err
+	}
+	msg := message.NewMessage(watermill.NewUUID(), payload)
+	err = s.publisher.Publish("stroke_updates", msg)
+	if err != nil {
+		log.Println("Error publishing stroke:", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) handleShape(shape Shape) error {
+	payload, err := json.Marshal(shape)
+	if err != nil {
+		return err
+	}
+	msg := message.NewMessage(watermill.NewUUID(), payload)
+	err = s.publisher.Publish("shape_updates", msg)
+	if err != nil {
+		log.Println("Error publishing shape:", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) handleText(text Text) error {
+	payload, err := json.Marshal(text)
+	if err != nil {
+		return err
+	}
+	msg := message.NewMessage(watermill.NewUUID(), payload)
+	err = s.publisher.Publish("text_updates", msg)
+	if err != nil {
+		log.Println("Error publishing text:", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) handleClear(clearMsg Clear) error {
+	payload, err := json.Marshal(clearMsg)
+	if err != nil {
+		return err
+	}
+	msg := message.NewMessage(watermill.NewUUID(), payload)
+	err = s.publisher.Publish("clear_updates", msg)
+	if err != nil {
+		log.Println("Error publishing clear:", err)
+		return err
+	}
+
+	now := time.Now().UTC()
+	s.strokeSet.Clear(now)
+	s.shapeSet.Clear(now)
+	s.textSet.Clear(now)
+	log.Println("Cleared local CRDT sets")
+
+	streams := []string{"stroke_updates", "shape_updates", "text_updates", "clear_updates"}
+
+	for _, stream := range streams {
+		err := s.redisClient.Del(context.Background(), stream).Err()
+		if err != nil {
+			log.Printf("Error deleting stream %s: %v", stream, err)
+			return err
+		}
+		log.Printf("Deleted stream: %s", stream)
+
+		err = CreateConsumerGroup(s.redisClient, stream, "reconcile_group")
+		if err != nil {
+			log.Printf("Error recreating consumer group for stream %s: %v", stream, err)
+			return err
+		}
+		log.Printf("Recreated consumer group 'reconcile_group' for stream: %s", stream)
+	}
+
 	return nil
 }
 
 func (s *Server) StartSubscribers() {
 	strokes, err := s.subscriber.Subscribe(context.Background(), "stroke_updates")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to subscribe to stroke_updates:", err)
 	}
-
-	go func() {
-		for msg := range strokes {
-			s.broadcastCh <- msg.Payload
-			msg.Ack()
+	go s.handleSubscription(strokes, func(data []byte) error {
+		var stroke Stroke
+		if err := json.Unmarshal(data, &stroke); err != nil {
+			return err
 		}
-	}()
+		s.strokeSet.Add(stroke, time.Now().UTC())
+		return nil
+	})
 
 	shapes, err := s.subscriber.Subscribe(context.Background(), "shape_updates")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to subscribe to shape_updates:", err)
 	}
-	go func() {
-		for msg := range shapes {
-			s.broadcastCh <- msg.Payload
-			msg.Ack()
+	go s.handleSubscription(shapes, func(data []byte) error {
+		var shape Shape
+		if err := json.Unmarshal(data, &shape); err != nil {
+			return err
 		}
-	}()
+		s.shapeSet.Add(shape, time.Now().UTC())
+		return nil
+	})
 
 	texts, err := s.subscriber.Subscribe(context.Background(), "text_updates")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to subscribe to text_updates:", err)
 	}
-	go func() {
-		for msg := range texts {
-			s.broadcastCh <- msg.Payload
-			msg.Ack()
+	go s.handleSubscription(texts, func(data []byte) error {
+		var text Text
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
 		}
-	}()
+		s.textSet.Add(text, time.Now().UTC())
+		return nil
+	})
 
 	clears, err := s.subscriber.Subscribe(context.Background(), "clear_updates")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to subscribe to clear_updates:", err)
 	}
-	go func() {
-		for msg := range clears {
-			s.broadcastCh <- msg.Payload
-			msg.Ack()
+	go s.handleSubscription(clears, func(data []byte) error {
+		var clearMsg Clear
+		if err := json.Unmarshal(data, &clearMsg); err != nil {
+			return err
 		}
-	}()
+
+		s.strokeSet.Clear(time.Now().UTC())
+		s.shapeSet.Clear(time.Now().UTC())
+		s.textSet.Clear(time.Now().UTC())
+		return nil
+	})
+}
+
+func (s *Server) handleSubscription(msgs <-chan *message.Message, applyFunc func([]byte) error) {
+	for msg := range msgs {
+		if err := applyFunc(msg.Payload); err != nil {
+			log.Println("Error applying message:", err)
+			msg.Nack()
+			continue
+		}
+		s.broadcastCh <- msg.Payload
+		msg.Ack()
+	}
+}
+
+func (s *Server) ReconcileState(ctx context.Context, reconcileSubscriber message.Subscriber, topics []string) error {
+	for _, topic := range topics {
+		msgChan, err := reconcileSubscriber.Subscribe(ctx, topic)
+		if err != nil {
+			return err
+		}
+
+		log.Println("Reconciling topic:", topic)
+
+		inactivityTimeout := 50 * time.Millisecond
+		inactivityTimer := time.NewTimer(inactivityTimeout)
+
+		for {
+			select {
+			case msg, ok := <-msgChan:
+				if !ok {
+					log.Println("Subscription channel closed for topic:", topic)
+					goto NextTopic
+				}
+				if err := s.applyMessage(msg); err != nil {
+					log.Println("Error applying reconcile message:", err)
+				}
+				msg.Ack()
+
+				if !inactivityTimer.Stop() {
+					<-inactivityTimer.C
+				}
+				inactivityTimer.Reset(inactivityTimeout)
+
+			case <-inactivityTimer.C:
+				log.Println("No more messages in topic:", topic)
+				goto NextTopic
+
+			case <-ctx.Done():
+				log.Println("Reconcile context done, stopping early")
+				return ctx.Err()
+			}
+		}
+
+	NextTopic:
+		inactivityTimer.Stop()
+	}
+
+	log.Println("Reconciliation completed")
+	return nil
+}
+
+func (s *Server) applyMessage(msg *message.Message) error {
+	fmt.Println("message received")
+
+	var base struct {
+		Kind int `json:"kind"`
+	}
+	if err := json.Unmarshal(msg.Payload, &base); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+
+	switch base.Kind {
+	case KindStroke:
+		var stroke Stroke
+		if err := json.Unmarshal(msg.Payload, &stroke); err != nil {
+			return err
+		}
+		if stroke.ID == "" || stroke.UserID == 0 || len(stroke.Points) == 0 {
+			log.Println("Invalid stroke data, skipping")
+			return nil
+		}
+		s.strokeSet.Add(stroke, now)
+	case KindShape:
+		var shape Shape
+		if err := json.Unmarshal(msg.Payload, &shape); err != nil {
+			return err
+		}
+		if shape.ID == "" || shape.UserID == 0 || shape.ShapeType == "" || shape.Color == "" {
+			log.Println("Invalid shape data, skipping")
+			return nil
+		}
+		s.shapeSet.Add(shape, now)
+	case KindText:
+		var text Text
+		if err := json.Unmarshal(msg.Payload, &text); err != nil {
+			return err
+		}
+		if text.ID == "" || text.UserID == 0 || text.Content == "" || text.Color == "" {
+			log.Println("Invalid text data, skipping")
+			return nil
+		}
+		s.textSet.Add(text, now)
+	case KindClear:
+		s.strokeSet.Clear(now)
+		s.shapeSet.Clear(now)
+		s.textSet.Clear(now)
+	default:
+		log.Println("Unknown message kind during reconcile:", base.Kind)
+		return nil
+	}
+	return nil
 }

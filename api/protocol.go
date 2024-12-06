@@ -27,6 +27,7 @@ type Connected struct {
 	Strokes []Stroke `json:"strokes"`
 	Shapes  []Shape  `json:"shapes"`
 	Texts   []Text   `json:"texts"`
+	NodeID  string   `json:"node_id"`
 }
 
 func NewConnected(color string, users []User, strokes []Stroke, shapes []Shape, texts []Text) *Connected {
@@ -37,6 +38,7 @@ func NewConnected(color string, users []User, strokes []Stroke, shapes []Shape, 
 		Strokes: strokes,
 		Shapes:  shapes,
 		Texts:   texts,
+		NodeID:  NodeID,
 	}
 }
 
@@ -66,6 +68,7 @@ func NewUserLeft(userID int) *UserLeft {
 
 type Stroke struct {
 	Kind   int     `json:"kind"`
+	ID     string  `json:"id"`
 	UserID int     `json:"userId"`
 	Points []Point `json:"points"`
 	Finish bool    `json:"finish"`
@@ -73,6 +76,7 @@ type Stroke struct {
 
 type Shape struct {
 	Kind      int     `json:"kind"`
+	ID        string  `json:"id"`
 	UserID    int     `json:"userId"`
 	ShapeType string  `json:"shapeType"`
 	Start     Point   `json:"start"`
@@ -81,9 +85,10 @@ type Shape struct {
 	Color     string  `json:"color"`
 }
 
-func NewShape(userID int, shapeType string, start, end Point, radius float64, color string) *Shape {
+func NewShape(id string, userID int, shapeType string, start, end Point, radius float64, color string) *Shape {
 	return &Shape{
 		Kind:      KindShape,
+		ID:        id,
 		UserID:    userID,
 		ShapeType: shapeType,
 		Start:     start,
@@ -95,6 +100,7 @@ func NewShape(userID int, shapeType string, start, end Point, radius float64, co
 
 type Text struct {
 	Kind     int    `json:"kind"`
+	ID       string `json:"id"`
 	UserID   int    `json:"userId"`
 	Content  string `json:"content"`
 	Position Point  `json:"position"`
@@ -102,9 +108,10 @@ type Text struct {
 	Color    string `json:"color"`
 }
 
-func NewText(userID int, content string, position Point, fontSize int, color string) *Text {
+func NewText(id string, userID int, content string, position Point, fontSize int, color string) *Text {
 	return &Text{
 		Kind:     KindText,
+		ID:       id,
 		UserID:   userID,
 		Content:  content,
 		Position: position,
@@ -114,6 +121,7 @@ func NewText(userID int, content string, position Point, fontSize int, color str
 }
 
 type Clear struct {
-	Kind   int `json:"kind"`
-	UserID int `json:"userId"`
+	Kind   int    `json:"kind"`
+	ID     string `json:"id"`
+	UserID int    `json:"userId"`
 }

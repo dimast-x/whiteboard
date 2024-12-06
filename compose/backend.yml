@@ -30,25 +30,12 @@ services:
     networks:
       - int_network
 
-  postgres:
-    image: postgres:latest
-    container_name: postgres
-    environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: securepassword
-      POSTGRES_DB: app_database
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - int_network
-
   whiteboard:
     image: whiteboard
     build:
       context: ../
     depends_on:
       - redis
-      - postgres
     networks:
       - int_network
     labels:
@@ -61,28 +48,8 @@ services:
     deploy:
       replicas: 3
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    ports:
-      - "3001:3000"
-    networks:
-      - int_network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.local`)"
-      - "traefik.http.routers.grafana.entrypoints=web"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-
 volumes:
   redis_data:
-  postgres_data:
-  grafana_data:
 
 networks:
   int_network:

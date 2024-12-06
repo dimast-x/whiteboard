@@ -86,7 +86,7 @@
       let shapes = [];
       let texts = [];
       const userColors = {};
-      const socket = new WebSocket("ws://localhost/ws");
+      const socket = new WebSocket("ws://localhost/ws"); // Use port 30080 for k8s deployment.
       let startX, startY;
       let currentStroke = null;
       let previewShape = null;
@@ -125,7 +125,7 @@
           case MESSAGE_CONNECTED:
             strokeColor = message.color;
             myUserId = message.userId;
-
+            console.log(message.node_id);
             message.users.forEach(user => {
               userColors[user.id] = user.color;
             });
