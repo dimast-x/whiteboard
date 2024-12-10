@@ -1,13 +1,12 @@
-# Traefik
+# Traefik DaemonSet Configuration
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: traefik
   labels:
     app: traefik
 spec:
-  replicas: 2
   selector:
     matchLabels:
       app: traefik
@@ -21,12 +20,12 @@ spec:
       - name: traefik
         image: traefik:v2.9
         args:
-          - "--api.insecure=true"
-          - "--providers.kubernetescrd"
-          - "--entrypoints.web.address=:80"
-          - "--metrics.prometheus=true"
-          - "--ping=true"                # Enable ping endpoint
-          - "--ping.entrypoint=web"      # Ping endpoint on the 'web' entrypoint (port 80)
+          - "--api.insecure=true"                 # Enable Traefik's dashboard (use secure configuration for production)
+          - "--providers.kubernetescrd"           # Enable Kubernetes CRD provider
+          - "--entrypoints.web.address=:80"       # Define entry point for HTTP
+          - "--metrics.prometheus=true"           # Enable Prometheus metrics
+          - "--ping=true"                         # Enable ping endpoint for health checks
+          - "--ping.entrypoint=web"               # Ping endpoint on the 'web' entrypoint (port 80)
         ports:
         - name: http
           containerPort: 80
@@ -164,7 +163,7 @@ spec:
     spec:
       containers:
       - name: whiteboard
-        image: dimast0/whiteboard:v5
+        image: dimast0/whiteboard:v8
         ports:
         - name: websocket
           containerPort: 3000
