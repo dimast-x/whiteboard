@@ -7,7 +7,7 @@ metadata:
   labels:
     app: traefik
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: traefik
@@ -25,11 +25,31 @@ spec:
           - "--providers.kubernetescrd"
           - "--entrypoints.web.address=:80"
           - "--metrics.prometheus=true"
+          - "--ping=true"                # Enable ping endpoint
+          - "--ping.entrypoint=web"      # Ping endpoint on the 'web' entrypoint (port 80)
         ports:
         - name: http
           containerPort: 80
         - name: admin
           containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
 
 ---
 apiVersion: v1
